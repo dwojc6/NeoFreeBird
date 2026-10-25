@@ -1,3 +1,196 @@
+name: Build NeoFreeBird
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - "src/**"
+      - "deps/**"
+      - "layout/**"
+      - "branding/**"
+      - "tests/**"
+      - "tools/**"
+      - "Makefile"
+      - "build.sh"
+      - "rebrand.sh"
+      - "control"
+      - "BHTwitter.plist"
+      - ".gitmodules"
+      - ".github/workflows/build.yml"
+  workflow_dispatch:
+    inputs:
+      sdk_version:
+        description: "iOS SDK Version"
+        default: "16.5"
+        required: true
+        type: string
+      target_version:
+        description: "Target iOS Version"
+        default: "15.0"
+        required: true
+      decrypted_ipa_url:
+        description: "Direct URL of an authorized decrypted X 12.24.1 IPA (only needed for sideloaded/TrollStore)"
+        default: ""
+        required: false
+        type: string
+      deploy_format:
+        description: "Deployment format"
+        default: sideloaded
+        required: true
+        type: choice
+        options:
+          - rootfull
+          - sideloaded
+          - sideload-payload
+          - trollstore
+          - rootless
+      commit_id:
+        description: "(Optional) Commit ID to build at"
+        default: ""
+        required: false
+        type: string
+      upload_artifact:
+        description: "Upload package as an artifact"
+        default: true
+        required: false
+        type: boolean
+      create_release:
+        description: "Create a draft release (Private)"
+        default: false
+        required: false
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build NeoFreeBird
+    runs-on: macos-15-intel
+    permissions:
+      contents: write
+    env:
+      BUILD_SDK_VERSION: ${{ inputs.sdk_version || '16.5' }}
+      BUILD_TARGET_VERSION: ${{ inputs.target_version || '15.0' }}
+      BUILD_DEPLOY_FORMAT: ${{ inputs.deploy_format || 'rootless' }}
+
+    steps:
+      - name: Checkout Main
+        uses: actions/checkout@v6
+        with:
+          path: main
+          ref: ${{ github.event.inputs.commit_id || github.ref }}
+          submodules: false
+
+      - name: Install Dependencies
+        run: |
+          missing_formulas=()
+          for formula in make dpkg ldid; do
+            if ! brew list --formula "$formula" >/dev/null 2>&1; then
+              missing_formulas+=("$formula")
+            fi
+          done
+
+          if (( ${#missing_formulas[@]} )); then
+            # GitHub's macOS image includes AWS SAM CLI from this third-party
+            # tap, but this build does not use it. Remove it instead of granting
+            # the whole tap trust during formula resolution.
+            if brew tap | grep -qx 'aws/tap'; then
+              brew untap --force aws/tap
+            fi
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install "${missing_formulas[@]}"
+          else
+            echo "Required Homebrew formulae are already installed."
+          fi
+
+      - name: Add GNU Make to PATH
+        run: |
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+
+      - name: Test Twitter Branding
+        run: |
+          bash -n main/build.sh main/rebrand.sh
+          python3 -m py_compile main/branding/ipa_branding.py main/branding/build_twitter_bird_glyph.py main/branding/source_smoke_test.py
+          python3 main/branding/source_smoke_test.py
+          python3 main/branding/smoke_test.py
+          python3 main/tests/test_hook_audit.py
+
+      - name: Test sidebar persistence
+        run: |
+          swiftc -D BHT_SIDEBAR_TESTS main/src/Sidebar/BHTSidebarRuntime.swift main/tests/SidebarRuntimeTests.swift -o "$RUNNER_TEMP/sidebar-tests"
+          "$RUNNER_TEMP/sidebar-tests"
+
+      - name: Test Likes navigation and For You filters
+        run: |
+          swiftc main/src/Timeline/BHTHomeTimelineRuntime.swift main/tests/HomeTimelineRuntimeTests.swift -o "$RUNNER_TEMP/home-tests"
+          "$RUNNER_TEMP/home-tests"
+          python3 main/tests/run_native_regressions.py
+
+      - name: Restore Theos Toolchain
+        id: theos-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: theos
+          key: theos-${{ runner.os }}-${{ runner.arch }}-5280bd038207e14f8bd76f5417aa2fe641c03228
+
+      - name: Download Theos
+        if: steps.theos-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: theos/theos
+          # Pin the exact revision used by the last known-good build. Updating
+          # Theos now becomes an intentional, reviewable cache-key change.
+          ref: 5280bd038207e14f8bd76f5417aa2fe641c03228
+          path: theos
+          submodules: recursive
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Save Theos Toolchain
+        if: steps.theos-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          # Save immediately, before the separately cached SDK is restored.
+          # This keeps the toolchain cache small and independent of SDK input.
+          path: theos
+          key: theos-${{ runner.os }}-${{ runner.arch }}-5280bd038207e14f8bd76f5417aa2fe641c03228
+
+      - name: Install cyan
+        if: env.BUILD_DEPLOY_FORMAT == 'sideloaded' || env.BUILD_DEPLOY_FORMAT == 'trollstore'
+        run: pip install https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
+
+      - name: iOS SDK Caching
+        id: SDK
+        uses: actions/cache@v5
+        env:
+          cache-name: iOS-${{ inputs.sdk_version || '16.5' }}-SDK
+        with:
+          path: theos/sdks/
+          key: ${{ env.cache-name }}
+          restore-keys: ${{ env.cache-name }}
+
+      - name: Download iOS SDK
+        if: steps.SDK.outputs.cache-hit != 'true'
+        run: |
+          # Only download the specific SDK version
+          git clone -n --depth=1 --filter=tree:0 https://github.com/theos/sdks/
+          cd sdks
+          git sparse-checkout set --no-cone "iPhoneOS${BUILD_SDK_VERSION}.sdk"
+          git checkout
+          mv ./*.sdk "${THEOS}/sdks"
+        env:
+          THEOS: ${{ github.workspace }}/theos
+
+      - name: Get Tweak Info
+        run: |
+          TWEAK_NAME=$(sed -n 's/^Name: *//p' main/control)
+          TWEAK_VERSION=$(awk '/Version:/ {print $2}' main/control)
+          echo "TWEAK_NAME=${TWEAK_NAME}" >> "$GITHUB_ENV"
+          echo "TWEAK_VERSION=${TWEAK_VERSION}" >> "$GITHUB_ENV"
+          echo "$TWEAK_NAME $TWEAK_VERSION"
+
       - name: Prepare X IPA
         if: env.BUILD_DEPLOY_FORMAT == 'sideloaded' || env.BUILD_DEPLOY_FORMAT == 'trollstore'
         run: |
@@ -15,3 +208,107 @@
           echo "$X_VERSION"
         env:
           IPA_URL: ${{ inputs.decrypted_ipa_url }}
+
+      - name: Compute ffmpeg Cache Key
+        id: ffmpeg-key
+        run: |
+          echo "host-sdk=$(xcrun --sdk iphoneos --show-sdk-version)" >> "$GITHUB_OUTPUT"
+          echo "toolchain=$(xcodebuild -version | shasum -a 256 | cut -c1-12)" >> "$GITHUB_OUTPUT"
+          echo "source=$(git -C main rev-parse HEAD:deps/ffmpeg-kit-next/upstream)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore ffmpeg Stack
+        id: ffmpeg-cache
+        uses: actions/cache@v5
+        with:
+          # build-ffmpeg.sh installs the finished headers/libraries here, and
+          # this is also the path consumed by the Makefile.
+          path: main/deps/ffmpeg-kit-next/build
+          key: ffmpeg-stack-${{ runner.os }}-${{ runner.arch }}-sdk${{ steps.ffmpeg-key.outputs.host-sdk }}-${{ steps.ffmpeg-key.outputs.toolchain }}-${{ steps.ffmpeg-key.outputs.source }}-${{ hashFiles('main/deps/ffmpeg-kit-next/build-ffmpeg.sh') }}
+
+      - name: Checkout Required Build Sources
+        run: |
+          git -C main submodule sync --recursive
+          git -C main submodule update --init --depth 1 --recursive \
+            deps/flex/upstream
+
+          if [[ "${BUILD_DEPLOY_FORMAT}" == "sideloaded" || "${BUILD_DEPLOY_FORMAT}" == "sideload-payload" ]]; then
+            git -C main submodule update --init --depth 1 --recursive \
+              deps/zxPluginsInject/upstream
+          fi
+
+          if [[ "${FFMPEG_CACHE_HIT}" != "true" ]]; then
+            git -C main submodule update --init --depth 1 --recursive \
+              deps/ffmpeg-kit-next/upstream
+          else
+            echo "Using cached ffmpeg headers and libraries; source checkout skipped."
+          fi
+        env:
+          FFMPEG_CACHE_HIT: ${{ steps.ffmpeg-cache.outputs.cache-hit }}
+
+      - name: Build Package
+        run: |
+          cd ${{ github.workspace }}/main
+          sed -i '' "s/^TARGET.*$/TARGET := iphone:clang:${BUILD_SDK_VERSION}:${BUILD_TARGET_VERSION}/" Makefile
+          chmod +x build.sh deps/ffmpeg-kit-next/build-ffmpeg.sh
+          ./build.sh --${BUILD_DEPLOY_FORMAT}
+        env:
+          THEOS: ${{ github.workspace }}/theos
+          BUILD_DIR: ${{ runner.temp }}/nfb-ffmpeg-build
+          NFB_TIMINGS_FILE: ${{ runner.temp }}/nfb-build-timings.tsv
+
+      - name: Rename IPA to include IPA version
+        if: env.BUILD_DEPLOY_FORMAT == 'sideloaded' || env.BUILD_DEPLOY_FORMAT == 'trollstore'
+        run: |
+          mv "main/packages/$(ls -t main/packages | head -n1)" \
+             "main/packages/${{ env.TWEAK_NAME }}-${BUILD_DEPLOY_FORMAT}_${{ env.TWEAK_VERSION }}_${{ env.X_VERSION }}.${IPA_EXT}"
+        env:
+          IPA_EXT: ${{ env.BUILD_DEPLOY_FORMAT == 'trollstore' && 'tipa' || 'ipa' }}
+
+      - name: Pass package name
+        id: package_name
+        run: |
+          echo "package=$(ls -t main/packages | head -n1)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Artifact
+        if: ${{ inputs.upload_artifact }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.TWEAK_NAME }}_${{ env.TWEAK_VERSION }}
+          path: ${{ github.workspace }}/main/packages/${{ steps.package_name.outputs.package }}
+          if-no-files-found: error
+
+      - name: Create Draft Release
+        if: ${{ inputs.create_release }}
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ env.TWEAK_VERSION }}
+          name: v${{ env.TWEAK_VERSION }} - ${{ env.TWEAK_NAME }}
+          files: main/packages/${{ steps.package_name.outputs.package }}
+          draft: true
+
+      - name: Publish Build Summary
+        if: always()
+        run: |
+          {
+            echo "### Build performance"
+            echo
+            echo "| Item | Result |"
+            echo "| --- | --- |"
+            echo "| Job | ${JOB_STATUS} |"
+            echo "| Theos toolchain cache | ${THEOS_CACHE_HIT:-false} |"
+            echo "| ffmpeg stack cache | ${FFMPEG_CACHE_HIT:-false} |"
+
+            if [[ -s "${NFB_TIMINGS_FILE}" ]]; then
+              while IFS=$'\t' read -r phase seconds; do
+                printf '| %s | %ss |\n' "$phase" "$seconds"
+              done < "${NFB_TIMINGS_FILE}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          JOB_STATUS: ${{ job.status }}
+          THEOS_CACHE_HIT: ${{ steps.theos-cache.outputs.cache-hit }}
+          FFMPEG_CACHE_HIT: ${{ steps.ffmpeg-cache.outputs.cache-hit }}
+          NFB_TIMINGS_FILE: ${{ runner.temp }}/nfb-build-timings.tsv
