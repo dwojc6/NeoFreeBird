@@ -288,8 +288,9 @@ jobs:
           IPA_FILE: main/packages/${{ steps.package_name.outputs.package }}
           VAULT_REQUEST_ID: ${{ inputs.vault_request_id }}
         run: |
-          python3 -m pip install 'requests==2.32.5'
-          python3 main/tools/ipa_vault_upload.py
+          python3 -m venv "$RUNNER_TEMP/ipa-vault-upload-venv"
+          "$RUNNER_TEMP/ipa-vault-upload-venv/bin/python" -m pip install 'requests==2.32.5'
+          "$RUNNER_TEMP/ipa-vault-upload-venv/bin/python" main/tools/ipa_vault_upload.py
 
       - name: Publish IPA Vault result
         if: inputs.upload_pixeldrain && inputs.vault_request_id != ''
