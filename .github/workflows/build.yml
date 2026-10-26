@@ -206,7 +206,11 @@ jobs:
         if: env.BUILD_DEPLOY_FORMAT == 'sideloaded' || env.BUILD_DEPLOY_FORMAT == 'trollstore'
         run: |
           mkdir -p main/packages
-          wget "$IPA_URL" --no-verbose -O main/packages/com.atebits.Tweetie2.ipa
+          if [[ "$IPA_URL" == https://pixeldrain.com/api/file/* && -n "$PIXELDRAIN_API_KEY" ]]; then
+            curl --fail --location --retry 3 --retry-all-errors --user ":$PIXELDRAIN_API_KEY" "$IPA_URL" -o main/packages/com.atebits.Tweetie2.ipa
+          else
+            curl --fail --location --retry 3 --retry-all-errors "$IPA_URL" -o main/packages/com.atebits.Tweetie2.ipa
+          fi
           unzip -q main/packages/com.atebits.Tweetie2.ipa -d main/tmp
           APP_PLIST=$(find main/tmp/Payload -maxdepth 2 -name Info.plist -print -quit)
           if [ -z "$APP_PLIST" ]; then
@@ -220,6 +224,7 @@ jobs:
           echo "$X_VERSION"
         env:
           IPA_URL: ${{ inputs.decrypted_ipa_url }}
+          PIXELDRAIN_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
 
       - name: Compute ffmpeg Cache Key
         id: ffmpeg-key
