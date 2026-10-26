@@ -1,4 +1,5 @@
 name: Build NeoFreeBird
+run-name: ${{ inputs.vault_request_id || format('Build NeoFreeBird · {0}', github.ref_name) }}
 
 on:
   pull_request:
@@ -20,6 +21,16 @@ on:
       - ".github/workflows/build.yml"
   workflow_dispatch:
     inputs:
+      vault_request_id:
+        description: "IPA Vault correlation ID (leave blank for manual builds)"
+        default: ""
+        required: false
+        type: string
+      upload_pixeldrain:
+        description: "Upload the built IPA to Pixeldrain (requires PIXELDRAIN_API_KEY secret)"
+        default: false
+        required: false
+        type: boolean
       sdk_version:
         description: "iOS SDK Version"
         default: "16.5"
@@ -62,8 +73,8 @@ on:
         type: boolean
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ inputs.vault_request_id || github.ref }}
+  cancel-in-progress: ${{ inputs.vault_request_id == '' }}
 
 jobs:
   build:
@@ -194,6 +205,7 @@ jobs:
       - name: Prepare X IPA
         if: env.BUILD_DEPLOY_FORMAT == 'sideloaded' || env.BUILD_DEPLOY_FORMAT == 'trollstore'
         run: |
+          mkdir -p main/packages
           wget "$IPA_URL" --no-verbose -O main/packages/com.atebits.Tweetie2.ipa
           unzip -q main/packages/com.atebits.Tweetie2.ipa -d main/tmp
           APP_PLIST=$(find main/tmp/Payload -maxdepth 2 -name Info.plist -print -quit)
@@ -268,6 +280,25 @@ jobs:
         id: package_name
         run: |
           echo "package=$(ls -t main/packages | head -n1)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload built IPA to Pixeldrain
+        if: inputs.upload_pixeldrain && (env.BUILD_DEPLOY_FORMAT == 'sideloaded' || env.BUILD_DEPLOY_FORMAT == 'trollstore')
+        env:
+          PIXELDRAIN_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
+          IPA_FILE: main/packages/${{ steps.package_name.outputs.package }}
+          VAULT_REQUEST_ID: ${{ inputs.vault_request_id }}
+        run: |
+          python3 -m pip install 'requests==2.32.5'
+          python3 main/tools/ipa_vault_upload.py
+
+      - name: Publish IPA Vault result
+        if: inputs.upload_pixeldrain && inputs.vault_request_id != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: ipa-vault-result-${{ inputs.vault_request_id }}
+          path: ipa-vault-result/result.json
+          retention-days: 30
+          if-no-files-found: error
 
       - name: Upload Artifact
         if: ${{ inputs.upload_artifact }}
