@@ -21,6 +21,11 @@ on:
       - ".github/workflows/build.yml"
   workflow_dispatch:
     inputs:
+      source_sha256:
+        description: "Expected source IPA SHA-256 (provided by IPA Vault)"
+        default: ""
+        required: false
+        type: string
       vault_request_id:
         description: "IPA Vault correlation ID (leave blank for manual builds)"
         default: ""
@@ -206,10 +211,16 @@ jobs:
         if: env.BUILD_DEPLOY_FORMAT == 'sideloaded' || env.BUILD_DEPLOY_FORMAT == 'trollstore'
         run: |
           mkdir -p main/packages
-          if [[ "$IPA_URL" == https://pixeldrain.com/api/file/* && -n "$PIXELDRAIN_API_KEY" ]]; then
-            curl --fail --location --retry 3 --retry-all-errors --user ":$PIXELDRAIN_API_KEY" "$IPA_URL" -o main/packages/com.atebits.Tweetie2.ipa
+          if [[ "$IPA_URL" == "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/assets/"* ]]; then
+            curl --fail --location --retry 3 --retry-all-errors --header "Authorization: Bearer $GH_TOKEN" --header "Accept: application/octet-stream" "$IPA_URL" -o main/packages/com.atebits.Tweetie2.ipa
+          elif [[ "$IPA_URL" == https://pixeldrain.com/api/file/* && -n "$PIXELDRAIN_API_KEY" ]]; then
+            curl --fail --location --user ":$PIXELDRAIN_API_KEY" "$IPA_URL" -o main/packages/com.atebits.Tweetie2.ipa
           else
             curl --fail --location --retry 3 --retry-all-errors "$IPA_URL" -o main/packages/com.atebits.Tweetie2.ipa
+          fi
+          if [[ -n "$SOURCE_SHA256" ]]; then
+            [[ "$SOURCE_SHA256" =~ ^[a-f0-9]{64}$ ]] || exit 1
+            printf '%s  %s\n' "$SOURCE_SHA256" main/packages/com.atebits.Tweetie2.ipa | shasum -a 256 -c -
           fi
           unzip -q main/packages/com.atebits.Tweetie2.ipa -d main/tmp
           APP_PLIST=$(find main/tmp/Payload -maxdepth 2 -name Info.plist -print -quit)
@@ -224,6 +235,8 @@ jobs:
           echo "$X_VERSION"
         env:
           IPA_URL: ${{ inputs.decrypted_ipa_url }}
+          SOURCE_SHA256: ${{ inputs.source_sha256 }}
+          GH_TOKEN: ${{ github.token }}
           PIXELDRAIN_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
 
       - name: Compute ffmpeg Cache Key
