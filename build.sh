@@ -174,12 +174,6 @@ validate_runtime_linkage() {
   fi
 }
 
-apply_sideload_branding() {
-  local ipa="$SCRIPT_DIR/packages/com.atebits.Tweetie2.ipa"
-  local icon="$SCRIPT_DIR/branding/TwitterAppIcon.png"
-  bash "$SCRIPT_DIR/rebrand.sh" --twitter-branding --twitter-icon "$icon" "$ipa"
-}
-
 # The ffmpeg stack is built from source, not tracked. Check a representative
 # header and both wrapper/core archives so a partial cache cannot be accepted.
 if [[ ! -f "$SCRIPT_DIR/deps/ffmpeg-kit-next/build/FFmpegKit.h" ||
@@ -212,7 +206,6 @@ case "$MODE" in
     run_make "Sideloaded compile" SIDELOADED=1 || die "An error occurred when building."
     if [[ -e ./packages/com.atebits.Tweetie2.ipa ]]; then
       say "Building the IPA."
-      run_timed "Sideloaded branding" apply_sideload_branding || die "Branding failed."
       if command -v cyan >/dev/null 2>&1; then
         BHT_DYLIB="$(find_build_artifact BHTwitter.dylib)"
         validate_runtime_linkage "$BHT_DYLIB"
@@ -247,7 +240,6 @@ case "$MODE" in
     run_make "TrollStore compile" || die "An error occurred when building."
     if [[ -e ./packages/com.atebits.Tweetie2.ipa ]]; then
       say "Merging NeoFreeBird to provided Twitter IPA."
-      run_timed "TrollStore branding" apply_sideload_branding || die "Branding failed."
       if command -v cyan >/dev/null 2>&1; then
         BHT_DYLIB="$(find_build_artifact BHTwitter.dylib)"
         validate_runtime_linkage "$BHT_DYLIB"
