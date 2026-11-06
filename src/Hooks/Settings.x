@@ -243,7 +243,7 @@ static void addFallbackEntryIfNeeded(UIViewController* viewController) {
         initWithTitle:[[BHTBundle sharedBundle] localizedStringForKey:@"NFB_SETTINGS_TITLE"]
                 style:UIBarButtonItemStylePlain
                target:viewController
-               action:@selector(nfb_openSettings)];
+               action:NSSelectorFromString(@"nfb_openSettings")];
 
     NSMutableArray* items =
         [viewController.navigationItem.rightBarButtonItems mutableCopy] ?: [NSMutableArray array];
@@ -262,7 +262,7 @@ static void addFallbackEntryIfNeeded(UIViewController* viewController) {
     NSString* name = NSStringFromClass([self class]);
     if ([name rangeOfString:@"Settings" options:NSCaseInsensitiveSearch].location != NSNotFound) {
         NSLog(@"[NFB] settings-like VC appeared: %@ parent=%@ nav=%@", name,
-              NSStringFromClass([self.parent class]),
+              NSStringFromClass([self.parentViewController class]),
               [self.navigationController.viewControllers valueForKey:@"class"]);
     }
 
