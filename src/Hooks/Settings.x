@@ -60,6 +60,7 @@ static TFNSettingsNavigationItem* makeNeoFreeBirdSettingsItem(
         @selector(initWithTitle:detail:iconName:controllerFactory:);
     if (!itemClass ||
         ![itemClass instancesRespondToSelector:initializer]) {
+        NSLog(@"[NFB] settings item unavailable: class=%@", itemClass);
         return nil;
     }
 
@@ -119,7 +120,12 @@ static NSArray* sectionsByInsertingEntry(TFNItemsDataViewController* settingsVC,
 // tag the root in viewWillAppear, insert once to repair the first build, and let
 // the rebuild transform below re-add the entry on every later snapshot.
 static void insertNeoFreeBirdSettingsIfRoot(TFNItemsDataViewController* settingsVC) {
-    if (!settingsVCIsRoot(settingsVC)) {
+    BOOL isRoot = settingsVCIsRoot(settingsVC);
+    NSLog(@"[NFB] T1GenericSettings viewWillAppear class=%@ root=%d nav=%@",
+          NSStringFromClass([settingsVC class]), isRoot,
+          [settingsVC.navigationController.viewControllers valueForKey:@"class"]);
+
+    if (!isRoot) {
         return;
     }
 
@@ -163,7 +169,112 @@ static NSArray* sectionsWithNeoFreeBirdEntry(TFNItemsDataViewController* setting
 %hook TFNItemsDataViewController
 - (NSArray*)updatedSections:(NSArray*)sections forStyle:(NSInteger)style {
     NSArray* updatedSections = %orig;
+    if (isSettingsClass(self)) {
+        NSLog(@"[NFB] updatedSections on %@ root-tagged=%d",
+              NSStringFromClass([self class]),
+              [objc_getAssociatedObject(self, SettingsRootKey) boolValue]);
+    }
     return sectionsWithNeoFreeBirdEntry(self, updatedSections);
+}
+%end
+
+// MARK: - X 12.40.1 diagnostics and fallback entry
+//
+// X 12.40.1 ships a Swift settings stack (XSettings.SettingsListViewController,
+// SettingsChromeViewController, SettingsContainerController, ...) alongside
+// T1GenericSettingsViewController. Which class backs the root Settings screen
+// is UNCONFIRMED. The log line below prints every settings-like view controller
+// that appears so the real root class can be identified (filter Console on NFB).
+//
+// The fallback adds an "NFB" button to the nav bar of the first Swift settings
+// candidate in the stack, since a Swift list is not a TFNItemsDataViewController
+// and cannot take the row insertion above. It is best-effort and unverified:
+// once the root class is known, replace this with a proper hook and delete the
+// logging.
+
+static const void* NFBFallbackButtonKey = &NFBFallbackButtonKey;
+
+static NSArray<NSString*>* swiftSettingsRootCandidates(void) {
+    return @[
+        @"_TtC9XSettings26SettingsListViewController",
+        @"XSettings.SettingsListViewController",
+        @"SettingsListViewController",
+    ];
+}
+
+static BOOL isSwiftSettingsCandidate(UIViewController* viewController) {
+    for (NSString* name in swiftSettingsRootCandidates()) {
+        Class cls = NSClassFromString(name);
+        if (cls && [viewController isKindOfClass:cls]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+static BOOL swiftSettingsVCIsRoot(UIViewController* viewController) {
+    for (UIViewController* current in viewController.navigationController.viewControllers) {
+        if (current == viewController) {
+            return YES;
+        }
+
+        if (isSettingsClass(current) || isSwiftSettingsCandidate(current)) {
+            return NO;
+        }
+    }
+
+    return NO;
+}
+
+static void addFallbackEntryIfNeeded(UIViewController* viewController) {
+    if (!isSwiftSettingsCandidate(viewController)) {
+        return;
+    }
+
+    if (!swiftSettingsVCIsRoot(viewController)) {
+        return;
+    }
+
+    if (objc_getAssociatedObject(viewController, NFBFallbackButtonKey)) {
+        return;
+    }
+
+    UIBarButtonItem* item = [[UIBarButtonItem alloc]
+        initWithTitle:[[BHTBundle sharedBundle] localizedStringForKey:@"NFB_SETTINGS_TITLE"]
+                style:UIBarButtonItemStylePlain
+               target:viewController
+               action:@selector(nfb_openSettings)];
+
+    NSMutableArray* items =
+        [viewController.navigationItem.rightBarButtonItems mutableCopy] ?: [NSMutableArray array];
+    [items addObject:item];
+    viewController.navigationItem.rightBarButtonItems = items;
+
+    objc_setAssociatedObject(viewController, NFBFallbackButtonKey, @YES,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSLog(@"[NFB] fallback settings button added to %@", NSStringFromClass([viewController class]));
+}
+
+%hook UIViewController
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+
+    NSString* name = NSStringFromClass([self class]);
+    if ([name rangeOfString:@"Settings" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+        NSLog(@"[NFB] settings-like VC appeared: %@ parent=%@ nav=%@", name,
+              NSStringFromClass([self.parent class]),
+              [self.navigationController.viewControllers valueForKey:@"class"]);
+    }
+
+    addFallbackEntryIfNeeded(self);
+}
+
+%new
+- (void)nfb_openSettings {
+    UIViewController* settingsVC = [BHTManager BHTSettingsWithAccount:nil];
+    if (settingsVC) {
+        [self.navigationController pushViewController:settingsVC animated:YES];
+    }
 }
 %end
 
