@@ -266,6 +266,19 @@ static NSString* NFBSuperchain(Class cls) {
     return [names componentsJoinedByString:@" > "];
 }
 
+// One os_log line per view (a single line is truncated at about 1 KB).
+static void NFBLogViewTree(UIView* view, int depth, int* budget) {
+    if (!view || depth > 7 || *budget <= 0) {
+        return;
+    }
+    (*budget)--;
+    os_log(OS_LOG_DEFAULT, "[NFB] tree depth=%d %{public}@", depth,
+           NSStringFromClass([view class]));
+    for (UIView* subview in view.subviews) {
+        NFBLogViewTree(subview, depth + 1, budget);
+    }
+}
+
 %hook UIViewController
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
@@ -285,6 +298,17 @@ static NSString* NFBSuperchain(Class cls) {
                [self respondsToSelector:NSSelectorFromString(@"sections")],
                [self respondsToSelector:NSSelectorFromString(@"updatedSections:forStyle:")],
                [stack componentsJoinedByString:@", "]);
+    }
+
+    if (isSwiftSettingsCandidate(self)) {
+        NSMutableArray* children = [NSMutableArray array];
+        for (UIViewController* child in self.childViewControllers) {
+            [children addObject:NSStringFromClass([child class])];
+        }
+        os_log(OS_LOG_DEFAULT, "[NFB] children=[%{public}@]",
+               [children componentsJoinedByString:@", "]);
+        int budget = 120;
+        NFBLogViewTree(self.view, 0, &budget);
     }
 
     addFallbackEntryIfNeeded(self);
