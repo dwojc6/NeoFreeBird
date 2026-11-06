@@ -5,6 +5,7 @@
 
 #import "HookHelpers.h"
 #import "Settings/ModernSettingsPageViewController.h"
+#import <os/log.h>
 
 static UIFont* _Nonnull remapFont(UIFont* origFont) {
     UIFont* newFont = getDefaultFont(origFont);
@@ -255,15 +256,35 @@ static void addFallbackEntryIfNeeded(UIViewController* viewController) {
     NSLog(@"[NFB] fallback settings button added to %@", NSStringFromClass([viewController class]));
 }
 
+// NSLog redacts dynamic strings as <private> outside a debugger; os_log with
+// %{public} keeps them readable in Console.app.
+static NSString* NFBSuperchain(Class cls) {
+    NSMutableArray* names = [NSMutableArray array];
+    for (Class current = cls; current; current = class_getSuperclass(current)) {
+        [names addObject:NSStringFromClass(current)];
+    }
+    return [names componentsJoinedByString:@" > "];
+}
+
 %hook UIViewController
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
 
     NSString* name = NSStringFromClass([self class]);
     if ([name rangeOfString:@"Settings" options:NSCaseInsensitiveSearch].location != NSNotFound) {
-        NSLog(@"[NFB] settings-like VC appeared: %@ parent=%@ nav=%@", name,
-              NSStringFromClass([self.parentViewController class]),
-              [self.navigationController.viewControllers valueForKey:@"class"]);
+        NSMutableArray* stack = [NSMutableArray array];
+        for (UIViewController* entry in self.navigationController.viewControllers) {
+            [stack addObject:NSStringFromClass([entry class])];
+        }
+        os_log(OS_LOG_DEFAULT,
+               "[NFB] settings-like VC: %{public}@ chain=[%{public}@] parent=%{public}@ "
+               "hasSections=%d hasUpdatedSections=%d nav=[%{public}@]",
+               name,
+               NFBSuperchain([self class]),
+               NSStringFromClass([self.parentViewController class]),
+               [self respondsToSelector:NSSelectorFromString(@"sections")],
+               [self respondsToSelector:NSSelectorFromString(@"updatedSections:forStyle:")],
+               [stack componentsJoinedByString:@", "]);
     }
 
     addFallbackEntryIfNeeded(self);
