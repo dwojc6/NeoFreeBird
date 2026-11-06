@@ -5,7 +5,6 @@
 
 #import "HookHelpers.h"
 #import "Settings/ModernSettingsPageViewController.h"
-#import <os/log.h>
 
 static UIFont* _Nonnull remapFont(UIFont* origFont) {
     UIFont* newFont = getDefaultFont(origFont);
@@ -61,7 +60,6 @@ static TFNSettingsNavigationItem* makeNeoFreeBirdSettingsItem(
         @selector(initWithTitle:detail:iconName:controllerFactory:);
     if (!itemClass ||
         ![itemClass instancesRespondToSelector:initializer]) {
-        NSLog(@"[NFB] settings item unavailable: class=%@", itemClass);
         return nil;
     }
 
@@ -121,12 +119,7 @@ static NSArray* sectionsByInsertingEntry(TFNItemsDataViewController* settingsVC,
 // tag the root in viewWillAppear, insert once to repair the first build, and let
 // the rebuild transform below re-add the entry on every later snapshot.
 static void insertNeoFreeBirdSettingsIfRoot(TFNItemsDataViewController* settingsVC) {
-    BOOL isRoot = settingsVCIsRoot(settingsVC);
-    NSLog(@"[NFB] T1GenericSettings viewWillAppear class=%@ root=%d nav=%@",
-          NSStringFromClass([settingsVC class]), isRoot,
-          [settingsVC.navigationController.viewControllers valueForKey:@"class"]);
-
-    if (!isRoot) {
+    if (!settingsVCIsRoot(settingsVC)) {
         return;
     }
 
@@ -170,30 +163,119 @@ static NSArray* sectionsWithNeoFreeBirdEntry(TFNItemsDataViewController* setting
 %hook TFNItemsDataViewController
 - (NSArray*)updatedSections:(NSArray*)sections forStyle:(NSInteger)style {
     NSArray* updatedSections = %orig;
-    if (isSettingsClass(self)) {
-        NSLog(@"[NFB] updatedSections on %@ root-tagged=%d",
-              NSStringFromClass([self class]),
-              [objc_getAssociatedObject(self, SettingsRootKey) boolValue]);
-    }
     return sectionsWithNeoFreeBirdEntry(self, updatedSections);
 }
 %end
 
-// MARK: - X 12.40.1 diagnostics and fallback entry
+// MARK: - X 12.40.1 settings entry (UIKit list)
 //
-// X 12.40.1 ships a Swift settings stack (XSettings.SettingsListViewController,
-// SettingsChromeViewController, SettingsContainerController, ...) alongside
-// T1GenericSettingsViewController. Which class backs the root Settings screen
-// is UNCONFIRMED. The log line below prints every settings-like view controller
-// that appears so the real root class can be identified (filter Console on NFB).
-//
-// The fallback adds an "NFB" button to the nav bar of the first Swift settings
-// candidate in the stack, since a Swift list is not a TFNItemsDataViewController
-// and cannot take the row insertion above. It is best-effort and unverified:
-// once the root class is known, replace this with a proper hook and delete the
-// logging.
+// In X 12.40.1 the root Settings screen is XSettings.SettingsListViewController.
+// It is a TFNViewController (not a TFNItemsDataViewController), so the section
+// insertion above no longer applies. Its content is a UITableView of
+// XDesignSystem.ListRow cells, so the NeoFreeBird row is added as the table's
+// tableHeaderView. That avoids touching X's data source, whose index paths would
+// all shift if a real row were inserted. If no table is found, or X already uses
+// a header, a nav-bar button is added instead.
+
+// 0: add the NeoFreeBird row to the list (nav-bar button only as a fallback).
+// 1: always use the nav-bar button instead of the list row.
+#define NFB_PREFER_NAV_BAR_BUTTON 0
 
 static const void* NFBFallbackButtonKey = &NFBFallbackButtonKey;
+
+@interface NFBSettingsHeaderRow : UIControl
+@property(nonatomic, weak) UIViewController* owner;
+@end
+
+@implementation NFBSettingsHeaderRow
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (!self) {
+        return nil;
+    }
+
+    self.backgroundColor = UIColor.clearColor;
+    self.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+
+    UILabel* titleLabel = [UILabel new];
+    titleLabel.text = [[BHTBundle sharedBundle] localizedStringForKey:@"NFB_SETTINGS_TITLE"];
+    titleLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightMedium];
+    titleLabel.textColor = UIColor.labelColor;
+
+    UILabel* detailLabel = [UILabel new];
+    detailLabel.text = [[BHTBundle sharedBundle] localizedStringForKey:@"NFB_SETTINGS_DETAIL"];
+    detailLabel.font = [UIFont systemFontOfSize:13.0];
+    detailLabel.textColor = UIColor.secondaryLabelColor;
+    detailLabel.numberOfLines = 2;
+
+    UIStackView* textStack =
+        [[UIStackView alloc] initWithArrangedSubviews:@[ titleLabel, detailLabel ]];
+    textStack.axis = UILayoutConstraintAxisVertical;
+    textStack.spacing = 2.0;
+    textStack.userInteractionEnabled = NO;
+    textStack.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UIImageView* chevron =
+        [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
+    chevron.tintColor = UIColor.tertiaryLabelColor;
+    chevron.contentMode = UIViewContentModeScaleAspectFit;
+    chevron.userInteractionEnabled = NO;
+    chevron.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UIView* separator = [UIView new];
+    separator.backgroundColor = UIColor.separatorColor;
+    separator.userInteractionEnabled = NO;
+    separator.translatesAutoresizingMaskIntoConstraints = NO;
+
+    [self addSubview:textStack];
+    [self addSubview:chevron];
+    [self addSubview:separator];
+
+    CGFloat hairline = 1.0 / UIScreen.mainScreen.scale;
+    [NSLayoutConstraint activateConstraints:@[
+        [textStack.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:16.0],
+        [textStack.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+        [textStack.trailingAnchor constraintLessThanOrEqualToAnchor:chevron.leadingAnchor
+                                                           constant:-12.0],
+        [chevron.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-16.0],
+        [chevron.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+        [chevron.widthAnchor constraintEqualToConstant:12.0],
+        [separator.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:16.0],
+        [separator.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+        [separator.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+        [separator.heightAnchor constraintEqualToConstant:hairline],
+    ]];
+
+    [self addTarget:self
+                  action:@selector(nfb_didTap)
+        forControlEvents:UIControlEventTouchUpInside];
+    return self;
+}
+
+- (void)setHighlighted:(BOOL)highlighted {
+    [super setHighlighted:highlighted];
+    self.backgroundColor = highlighted ? UIColor.systemFillColor : UIColor.clearColor;
+}
+
+- (void)nfb_didTap {
+    UIViewController* owner = self.owner;
+    if (!owner) {
+        return;
+    }
+
+    id account = nil;
+    if ([owner respondsToSelector:@selector(account)]) {
+        account = ((id (*)(id, SEL))objc_msgSend)(owner, @selector(account));
+    }
+
+    UIViewController* settingsVC = [BHTManager BHTSettingsWithAccount:account];
+    if (settingsVC) {
+        [owner.navigationController pushViewController:settingsVC animated:YES];
+    }
+}
+
+@end
 
 static NSArray<NSString*>* swiftSettingsRootCandidates(void) {
     return @[
@@ -227,6 +309,48 @@ static BOOL swiftSettingsVCIsRoot(UIViewController* viewController) {
     return NO;
 }
 
+static UITableView* NFBFindTableView(UIView* root) {
+    if ([root isKindOfClass:[UITableView class]]) {
+        return (UITableView*)root;
+    }
+
+    for (UIView* subview in root.subviews) {
+        UITableView* found = NFBFindTableView(subview);
+        if (found) {
+            return found;
+        }
+    }
+
+    return nil;
+}
+
+// Returns YES when the header row is (or already was) installed.
+static BOOL NFBInstallSettingsHeader(UIViewController* viewController) {
+    if (!viewController.isViewLoaded) {
+        return NO;
+    }
+
+    UITableView* table = NFBFindTableView(viewController.view);
+    if (!table) {
+        return NO;
+    }
+
+    if ([table.tableHeaderView isKindOfClass:[NFBSettingsHeaderRow class]]) {
+        return YES;
+    }
+
+    // Never replace a header X put there itself.
+    if (table.tableHeaderView) {
+        return NO;
+    }
+
+    NFBSettingsHeaderRow* row = [[NFBSettingsHeaderRow alloc]
+        initWithFrame:CGRectMake(0, 0, CGRectGetWidth(table.bounds), 64.0)];
+    row.owner = viewController;
+    table.tableHeaderView = row;
+    return YES;
+}
+
 static void addFallbackEntryIfNeeded(UIViewController* viewController) {
     if (!isSwiftSettingsCandidate(viewController)) {
         return;
@@ -235,6 +359,12 @@ static void addFallbackEntryIfNeeded(UIViewController* viewController) {
     if (!swiftSettingsVCIsRoot(viewController)) {
         return;
     }
+
+#if !NFB_PREFER_NAV_BAR_BUTTON
+    if (NFBInstallSettingsHeader(viewController)) {
+        return;
+    }
+#endif
 
     if (objc_getAssociatedObject(viewController, NFBFallbackButtonKey)) {
         return;
@@ -253,64 +383,18 @@ static void addFallbackEntryIfNeeded(UIViewController* viewController) {
 
     objc_setAssociatedObject(viewController, NFBFallbackButtonKey, @YES,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    NSLog(@"[NFB] fallback settings button added to %@", NSStringFromClass([viewController class]));
-}
-
-// NSLog redacts dynamic strings as <private> outside a debugger; os_log with
-// %{public} keeps them readable in Console.app.
-static NSString* NFBSuperchain(Class cls) {
-    NSMutableArray* names = [NSMutableArray array];
-    for (Class current = cls; current; current = class_getSuperclass(current)) {
-        [names addObject:NSStringFromClass(current)];
-    }
-    return [names componentsJoinedByString:@" > "];
-}
-
-// One os_log line per view (a single line is truncated at about 1 KB).
-static void NFBLogViewTree(UIView* view, int depth, int* budget) {
-    if (!view || depth > 7 || *budget <= 0) {
-        return;
-    }
-    (*budget)--;
-    os_log(OS_LOG_DEFAULT, "[NFB] tree depth=%d %{public}@", depth,
-           NSStringFromClass([view class]));
-    for (UIView* subview in view.subviews) {
-        NFBLogViewTree(subview, depth + 1, budget);
-    }
 }
 
 %hook UIViewController
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    addFallbackEntryIfNeeded(self);
+}
+
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
 
-    NSString* name = NSStringFromClass([self class]);
-    if ([name rangeOfString:@"Settings" options:NSCaseInsensitiveSearch].location != NSNotFound) {
-        NSMutableArray* stack = [NSMutableArray array];
-        for (UIViewController* entry in self.navigationController.viewControllers) {
-            [stack addObject:NSStringFromClass([entry class])];
-        }
-        os_log(OS_LOG_DEFAULT,
-               "[NFB] settings-like VC: %{public}@ chain=[%{public}@] parent=%{public}@ "
-               "hasSections=%d hasUpdatedSections=%d nav=[%{public}@]",
-               name,
-               NFBSuperchain([self class]),
-               NSStringFromClass([self.parentViewController class]),
-               [self respondsToSelector:NSSelectorFromString(@"sections")],
-               [self respondsToSelector:NSSelectorFromString(@"updatedSections:forStyle:")],
-               [stack componentsJoinedByString:@", "]);
-    }
-
-    if (isSwiftSettingsCandidate(self)) {
-        NSMutableArray* children = [NSMutableArray array];
-        for (UIViewController* child in self.childViewControllers) {
-            [children addObject:NSStringFromClass([child class])];
-        }
-        os_log(OS_LOG_DEFAULT, "[NFB] children=[%{public}@]",
-               [children componentsJoinedByString:@", "]);
-        int budget = 120;
-        NFBLogViewTree(self.view, 0, &budget);
-    }
-
+    // Idempotent: re-adds the row if X rebuilt the table or swapped its header.
     addFallbackEntryIfNeeded(self);
 }
 
