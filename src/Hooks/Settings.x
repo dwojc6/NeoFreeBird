@@ -167,115 +167,14 @@ static NSArray* sectionsWithNeoFreeBirdEntry(TFNItemsDataViewController* setting
 }
 %end
 
-// MARK: - X 12.40.1 settings entry (UIKit list)
+// MARK: - X 12.40.1 settings entry (nav-bar button)
 //
 // In X 12.40.1 the root Settings screen is XSettings.SettingsListViewController.
 // It is a TFNViewController (not a TFNItemsDataViewController), so the section
-// insertion above no longer applies. Its content is a UITableView of
-// XDesignSystem.ListRow cells, so the NeoFreeBird row is added as the table's
-// tableHeaderView. That avoids touching X's data source, whose index paths would
-// all shift if a real row were inserted. If no table is found, or X already uses
-// a header, a nav-bar button is added instead.
-
-// 0: add the NeoFreeBird row to the list (nav-bar button only as a fallback).
-// 1: always use the nav-bar button instead of the list row.
-#define NFB_PREFER_NAV_BAR_BUTTON 0
+// insertion above no longer applies. The NeoFreeBird settings entry is a
+// nav-bar button added to that screen when it is the root settings controller.
 
 static const void* NFBFallbackButtonKey = &NFBFallbackButtonKey;
-
-@interface NFBSettingsHeaderRow : UIControl
-@property(nonatomic, weak) UIViewController* owner;
-@end
-
-@implementation NFBSettingsHeaderRow
-
-- (instancetype)initWithFrame:(CGRect)frame {
-    self = [super initWithFrame:frame];
-    if (!self) {
-        return nil;
-    }
-
-    self.backgroundColor = UIColor.clearColor;
-    self.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-
-    UILabel* titleLabel = [UILabel new];
-    titleLabel.text = [[BHTBundle sharedBundle] localizedStringForKey:@"NFB_SETTINGS_TITLE"];
-    titleLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightMedium];
-    titleLabel.textColor = UIColor.labelColor;
-
-    UILabel* detailLabel = [UILabel new];
-    detailLabel.text = [[BHTBundle sharedBundle] localizedStringForKey:@"NFB_SETTINGS_DETAIL"];
-    detailLabel.font = [UIFont systemFontOfSize:13.0];
-    detailLabel.textColor = UIColor.secondaryLabelColor;
-    detailLabel.numberOfLines = 2;
-
-    UIStackView* textStack =
-        [[UIStackView alloc] initWithArrangedSubviews:@[ titleLabel, detailLabel ]];
-    textStack.axis = UILayoutConstraintAxisVertical;
-    textStack.spacing = 2.0;
-    textStack.userInteractionEnabled = NO;
-    textStack.translatesAutoresizingMaskIntoConstraints = NO;
-
-    UIImageView* chevron =
-        [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
-    chevron.tintColor = UIColor.tertiaryLabelColor;
-    chevron.contentMode = UIViewContentModeScaleAspectFit;
-    chevron.userInteractionEnabled = NO;
-    chevron.translatesAutoresizingMaskIntoConstraints = NO;
-
-    UIView* separator = [UIView new];
-    separator.backgroundColor = UIColor.separatorColor;
-    separator.userInteractionEnabled = NO;
-    separator.translatesAutoresizingMaskIntoConstraints = NO;
-
-    [self addSubview:textStack];
-    [self addSubview:chevron];
-    [self addSubview:separator];
-
-    CGFloat hairline = 1.0 / UIScreen.mainScreen.scale;
-    [NSLayoutConstraint activateConstraints:@[
-        [textStack.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:16.0],
-        [textStack.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
-        [textStack.trailingAnchor constraintLessThanOrEqualToAnchor:chevron.leadingAnchor
-                                                           constant:-12.0],
-        [chevron.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-16.0],
-        [chevron.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
-        [chevron.widthAnchor constraintEqualToConstant:12.0],
-        [separator.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:16.0],
-        [separator.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
-        [separator.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
-        [separator.heightAnchor constraintEqualToConstant:hairline],
-    ]];
-
-    [self addTarget:self
-                  action:@selector(nfb_didTap)
-        forControlEvents:UIControlEventTouchUpInside];
-    return self;
-}
-
-- (void)setHighlighted:(BOOL)highlighted {
-    [super setHighlighted:highlighted];
-    self.backgroundColor = highlighted ? UIColor.systemFillColor : UIColor.clearColor;
-}
-
-- (void)nfb_didTap {
-    UIViewController* owner = self.owner;
-    if (!owner) {
-        return;
-    }
-
-    id account = nil;
-    if ([owner respondsToSelector:@selector(account)]) {
-        account = ((id (*)(id, SEL))objc_msgSend)(owner, @selector(account));
-    }
-
-    UIViewController* settingsVC = [BHTManager BHTSettingsWithAccount:account];
-    if (settingsVC) {
-        [owner.navigationController pushViewController:settingsVC animated:YES];
-    }
-}
-
-@end
 
 static NSArray<NSString*>* swiftSettingsRootCandidates(void) {
     return @[
@@ -309,48 +208,6 @@ static BOOL swiftSettingsVCIsRoot(UIViewController* viewController) {
     return NO;
 }
 
-static UITableView* NFBFindTableView(UIView* root) {
-    if ([root isKindOfClass:[UITableView class]]) {
-        return (UITableView*)root;
-    }
-
-    for (UIView* subview in root.subviews) {
-        UITableView* found = NFBFindTableView(subview);
-        if (found) {
-            return found;
-        }
-    }
-
-    return nil;
-}
-
-// Returns YES when the header row is (or already was) installed.
-static BOOL NFBInstallSettingsHeader(UIViewController* viewController) {
-    if (!viewController.isViewLoaded) {
-        return NO;
-    }
-
-    UITableView* table = NFBFindTableView(viewController.view);
-    if (!table) {
-        return NO;
-    }
-
-    if ([table.tableHeaderView isKindOfClass:[NFBSettingsHeaderRow class]]) {
-        return YES;
-    }
-
-    // Never replace a header X put there itself.
-    if (table.tableHeaderView) {
-        return NO;
-    }
-
-    NFBSettingsHeaderRow* row = [[NFBSettingsHeaderRow alloc]
-        initWithFrame:CGRectMake(0, 0, CGRectGetWidth(table.bounds), 64.0)];
-    row.owner = viewController;
-    table.tableHeaderView = row;
-    return YES;
-}
-
 static void addFallbackEntryIfNeeded(UIViewController* viewController) {
     if (!isSwiftSettingsCandidate(viewController)) {
         return;
@@ -359,12 +216,6 @@ static void addFallbackEntryIfNeeded(UIViewController* viewController) {
     if (!swiftSettingsVCIsRoot(viewController)) {
         return;
     }
-
-#if !NFB_PREFER_NAV_BAR_BUTTON
-    if (NFBInstallSettingsHeader(viewController)) {
-        return;
-    }
-#endif
 
     if (objc_getAssociatedObject(viewController, NFBFallbackButtonKey)) {
         return;
@@ -394,7 +245,7 @@ static void addFallbackEntryIfNeeded(UIViewController* viewController) {
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
 
-    // Idempotent: re-adds the row if X rebuilt the table or swapped its header.
+    // Idempotent: the associated-object guard prevents a duplicate button.
     addFallbackEntryIfNeeded(self);
 }
 
